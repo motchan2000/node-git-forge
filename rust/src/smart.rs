@@ -16,10 +16,8 @@ fn plain(status: u16, text: &str) -> Response {
 }
 
 fn git(content_type: &str, body: Vec<u8>) -> Response {
+    // Only the content type: every extra header is parsing work for a CPU-starved client.
     Response::bytes(200, content_type, body)
-        .with_header("cache-control", "no-cache, max-age=0, must-revalidate")
-        .with_header("expires", "Fri, 01 Jan 1980 00:00:00 GMT")
-        .with_header("pragma", "no-cache")
 }
 
 fn wants_v2(req: &Request) -> bool {

@@ -123,7 +123,30 @@ impl App {
     }
 }
 
+#[cfg(target_env = "gnu")]
+extern "C" {
+    fn mallopt(param: i32, value: i32) -> i32;
+}
+
+/// Keep freed memory in the process: under gVisor every mmap/munmap/mprotect/brk is an expensive
+/// trip through the sandbox's kernel, and the trial gives the entry 1 GB. Large buffers come from the
+/// heap rather than fresh mappings, the heap is never trimmed, and each growth takes 16 MB at once.
+/// (glibc's malloc also keeps per-thread arenas: musl's single malloc lock turned 50 concurrent clones
+/// into ~40k futex calls, glibc's into ~300.)
+fn tune_malloc() {
+    #[cfg(target_env = "gnu")]
+    unsafe {
+        const M_TRIM_THRESHOLD: i32 = -1;
+        const M_TOP_PAD: i32 = -2;
+        const M_MMAP_THRESHOLD: i32 = -3;
+        mallopt(M_MMAP_THRESHOLD, 64 << 20);
+        mallopt(M_TRIM_THRESHOLD, i32::MAX);
+        mallopt(M_TOP_PAD, 16 << 20);
+    }
+}
+
 fn main() {
+    tune_malloc();
     let login = std::env::var("FORGE_LOGIN").unwrap_or_else(|_| "adaiversen".into());
     let name = std::env::var("FORGE_NAME").unwrap_or_else(|_| if login == "adaiversen" { "ada iversen".into() } else { login.clone() });
     let viewer = User { id: 1000, email: format!("{}@example.invalid", login), login, name };

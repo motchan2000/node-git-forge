@@ -53,7 +53,6 @@ impl Response {
             headers: vec![
                 ("content-type".into(), "application/json; charset=utf-8".into()),
                 ("x-github-request-id".into(), request_id()),
-                ("x-github-media-type".into(), "github.v3; format=json".into()),
             ],
             body: if status == 204 { Vec::new() } else { text.into_bytes() },
         }

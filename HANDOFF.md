@@ -41,7 +41,17 @@
 - 1 位は 970（perf 170、perf_p50_us ≈ 306,000）。上位 3 つは Rust / Go の静的バイナリ。上位の値も「空いている時間帯に出た幸運な 1 回」の可能性がある。
 - リーダーボード API: `GET https://make.fun/api/competitions/github-core-clone-01/leaderboard`（`entries[].values`）
 
-### リポジトリの HEAD（この文書を含むコミット）
+### 2026-11-20 クラウドセッション（session_01R2SyqcRXZ6z6Vxb6zdjCSV）での変更
+
+- **静的 glibc ビルド＋ malloc 調整**（3 章参照）。musl の malloc がシステムコールを大量に出していた（clone で futex 約 40,000 回、
+  write/push で 1 操作あたり mmap/munmap 約 5 回）。変更後は全ワークロードで定常状態 1 リクエスト＝recvfrom 1＋sendto 1。
+  CPU を燃やさない純粋なシステムコール削減なので、混雑した本番でも逆効果になりにくい。
+- 不要な応答ヘッダーを削除（git 応答の cache-control/expires/pragma、REST の x-github-media-type。どのチェックも見ていない）。
+- 機能 120/120、grade-local（Docker/runc）984、リプレイはバイト一致を確認済み。
+- gVisor 内（`tests/perf/gv.sh`、2 CPU に固定）で旧版と交互に計測し、4 ワークロードとも改善傾向（結果は 4 章末尾）。
+- **このクラウドセッションでもコードを書いたので、提出時の bundle にこのセッションの記録も含めること**（7 章参照）。
+
+### リポジトリの HEAD（以前の記述）
 
 - 既定は **#3 と同じ設計**（スレッド/接続、ビジーポーリング OFF）＋本番では効果未確認の無害な変更（事前起動ワーカー、読み取り共有ロック）。
 - 実験用に残しているもの（既定 OFF、環境変数で有効化）:
@@ -87,14 +97,21 @@ tests/perf/gvisor-perf.sh   gVisor 内で forge＋スイートを動かす計測
 - **公式キット**（`github-core-clone-01-kit.tar.gz`）。リポジトリには入っていない（make.fun 側の配布物なので入れないこと）。ユーザーから受け取るか、make.fun の案内（https://make.fun/skill.md）に従って取得する。
 - Node 22、Docker（Rust のビルド用）。
 
-### Rust バイナリのビルド（静的 musl）
+### Rust バイナリのビルド（静的 glibc、2026-11-20 クラウドセッションで musl から変更）
 
 ```sh
 docker run --rm -v "$PWD/rust:/src" -v "$PWD/bin:/out" -w /src \
-  -e RUSTFLAGS="-C target-feature=+crt-static" rust:1-alpine \
-  sh -c 'cargo build --release --target x86_64-unknown-linux-musl && cp target/x86_64-unknown-linux-musl/release/forge /out/forge-linux-amd64'
+  -e RUSTFLAGS="-C target-feature=+crt-static" rust:1 \
+  sh -c 'cargo build --release --target x86_64-unknown-linux-gnu && cp target/x86_64-unknown-linux-gnu/release/forge /out/forge-linux-amd64'
 git update-index --chmod=+x bin/forge-linux-amd64   # Windows で作業した場合は必須
 ```
+
+**musl をやめた理由**: musl の malloc はグローバルロック 1 本＋こまめな mmap/munmap。strace で数えると
+clone ワークロード 1 回で futex 約 40,000 回（50 並列のスレッドが malloc ロックで競合）、
+write/push では 1 操作あたり mmap/munmap 約 5 回。gVisor ではどちらも高価なシステムコール。
+静的 glibc（スレッドごとの arena）＋ `main.rs` の `tune_malloc()`（mallopt でトリム無効・mmap 閾値 64 MB・
+TOP_PAD 16 MB）にすると、定常状態のシステムコールは 4 ワークロードとも **recvfrom 1 回＋sendto 1 回/リクエストだけ**
+（clone の futex は約 180 回）。
 
 ### 機能テスト（120 チェック）
 
@@ -165,6 +182,16 @@ node <kit>/cli/makefun.mjs grade-local --kit <kit> --bot <repo> --driver docker 
 5. **TCP オプション**（`TCP_QUICKACK` など）: POST でヘッダーと本文が別セグメントで届く場合の遅延対策。gVisor が対応しているかは要確認。
 6. **ぶれとの付き合い方**: 同一コードで 948 と 918 が出た。本選は締切後に 3 インスタンスで採点され、その平均で決まる（その時点の混雑次第で、全員が同じように影響を受けると考えられる）。dev 段階の 1 回の点数に一喜一憂しないこと。
 7. **ビジーポーリングの再評価**: ローカル gVisor では 1.26 倍速かった。本番の 924 は混雑時間帯の値なので、空いている時間帯に再計測する価値はある。ただし CPU を燃やすので、混雑ノードで不利になるリスクも残る。上限を小さく（例: 200 回）すれば、リスクと効果の中間を取れる。
+
+**2026-11-20 クラウドセッションの gVisor 交互計測**（`tests/perf/gv.sh`、2 CPU 固定、各 4 回の中央値 ms。この VM はぶれが大きい）:
+
+| | push | clone | read | write |
+|---|---|---|---|---|
+| 旧（musl、`9d8e656`） | 448（375–503） | 137（114–184） | 1188（956–1192） | 196（169–232） |
+| 新（glibc＋malloc 調整） | **350（339–353）** | 148（134–158） | 1200（874–1267） | 181（114–198） |
+
+push は明確に改善（ばらつきも小さい）、write はやや改善、clone と read はぶれの範囲内で差なし。
+`grade-local` を gVisor（Docker の既定ランタイムを runsc）で動かす試みは、コンテナ間ネットワークが通らず止まった。
 
 試すときの原則: ローカル gVisor（`tests/perf/gvisor-perf.sh`）で確実に速いものだけを採用する。本番の 1 回の点数では判断しない。**最後の提出は、ローカル gVisor で最速かつ 120/120 の版にする**。
 
