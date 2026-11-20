@@ -7,7 +7,7 @@ use crate::pack::*;
 use crate::store::Forge;
 use crate::util::{is_oid, percent_decode};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 const AGENT: &str = "agent=forge/1.0";
 
@@ -26,9 +26,9 @@ fn wants_v2(req: &Request) -> bool {
     req.header("git-protocol").map(|v| v.split(':').any(|p| p.trim() == "version=2")).unwrap_or(false)
 }
 
-fn v2_cache() -> &'static Mutex<HashMap<Vec<u8>, Arc<Vec<u8>>>> {
-    static C: OnceLock<Mutex<HashMap<Vec<u8>, Arc<Vec<u8>>>>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new(HashMap::new()))
+fn v2_cache() -> &'static RwLock<HashMap<Vec<u8>, Arc<Vec<u8>>>> {
+    static C: OnceLock<RwLock<HashMap<Vec<u8>, Arc<Vec<u8>>>>> = OnceLock::new();
+    C.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 /// Parse `/{owner}/{repo}.git/{action}`.
@@ -44,22 +44,43 @@ pub fn route(path: &str) -> Option<(String, String, &str)> {
     Some((percent_decode(owner), percent_decode(name), action))
 }
 
-pub fn handle(forge: &Mutex<Forge>, req: &Request, owner: &str, name: &str, action: &str, authorized: bool) -> Response {
+fn cache_key(id: u64, ref_version: u64, body: &[u8]) -> Option<Vec<u8>> {
+    if body.len() > 8192 {
+        return None;
+    }
+    let mut k = format!("{}:{}:", id, ref_version).into_bytes();
+    k.extend_from_slice(body);
+    Some(k)
+}
+
+pub fn handle(forge: &RwLock<Forge>, req: &Request, owner: &str, name: &str, action: &str, authorized: bool) -> Response {
     if !authorized {
         return plain(401, "Authentication required\n").with_header("www-authenticate", "Basic realm=\"forge\"");
     }
-    let mut f = forge.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(id) = f.repo_id(owner, name) else { return plain(404, "Repository not found\n") };
-    if action == "info/refs" {
-        if req.method != "GET" && req.method != "HEAD" {
-            return plain(405, "Method Not Allowed\n");
+    // Reads first, under a shared lock: advertisements and cached v2 answers never wait on each other.
+    {
+        let f = forge.read().unwrap_or_else(|e| e.into_inner());
+        let Some(id) = f.repo_id(owner, name) else { return plain(404, "Repository not found\n") };
+        if action == "info/refs" {
+            if req.method != "GET" && req.method != "HEAD" {
+                return plain(405, "Method Not Allowed\n");
+            }
+            let service = req.param("service").unwrap_or_default();
+            if service != "git-upload-pack" && service != "git-receive-pack" {
+                return plain(403, "dumb HTTP is not supported; pass ?service=\n");
+            }
+            return advertise(&f, id, &service, wants_v2(req));
         }
-        let service = req.param("service").unwrap_or_default();
-        if service != "git-upload-pack" && service != "git-receive-pack" {
-            return plain(403, "dumb HTTP is not supported; pass ?service=\n");
+        if req.method == "POST" && action == "git-upload-pack" && wants_v2(req) {
+            if let Some(k) = cache_key(id, f.repo(id).ref_version, &req.body) {
+                if let Some(hit) = v2_cache().read().unwrap_or_else(|e| e.into_inner()).get(&k) {
+                    return git("application/x-git-upload-pack-result", hit.as_ref().clone());
+                }
+            }
         }
-        return advertise(&f, id, &service, wants_v2(req));
     }
+    let mut f = forge.write().unwrap_or_else(|e| e.into_inner());
+    let Some(id) = f.repo_id(owner, name) else { return plain(404, "Repository not found\n") };
     if req.method != "POST" {
         return plain(405, "Method Not Allowed\n");
     }
@@ -134,15 +155,9 @@ fn advertise(f: &Forge, id: u64, service: &str, v2: bool) -> Response {
 
 fn upload_v2(f: &mut Forge, id: u64, body: &[u8]) -> Result<Response, String> {
     let ct = "application/x-git-upload-pack-result";
-    let key = if body.len() <= 8192 {
-        let mut k = format!("{}:{}:", id, f.repo(id).ref_version).into_bytes();
-        k.extend_from_slice(body);
-        Some(k)
-    } else {
-        None
-    };
+    let key = cache_key(id, f.repo(id).ref_version, body);
     if let Some(k) = &key {
-        if let Some(hit) = v2_cache().lock().unwrap().get(k) {
+        if let Some(hit) = v2_cache().read().unwrap_or_else(|e| e.into_inner()).get(k) {
             return Ok(git(ct, hit.as_ref().clone()));
         }
     }
@@ -173,7 +188,7 @@ fn upload_v2(f: &mut Forge, id: u64, body: &[u8]) -> Result<Response, String> {
         _ => return Err(format!("unknown command {:?}", command)),
     };
     if let Some(k) = key {
-        let mut c = v2_cache().lock().unwrap();
+        let mut c = v2_cache().write().unwrap_or_else(|e| e.into_inner());
         if c.len() >= 256 {
             c.clear();
         }

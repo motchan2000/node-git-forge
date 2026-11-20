@@ -3,9 +3,10 @@
 
 use crate::json::Json;
 use std::io::{Read, Write};
+use std::collections::VecDeque;
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 pub struct Request {
@@ -102,28 +103,112 @@ pub type Handler = Arc<dyn Fn(&Request) -> Response + Send + Sync>;
 
 const MAX_HEADER: usize = 64 * 1024;
 const MAX_BODY: usize = 512 * 1024 * 1024;
-const MAX_THREADS: usize = 200;
+/// Workers started up front: a burst of new connections (50 concurrent clones) never waits on
+/// thread creation, which is expensive under a sandboxing kernel.
+const PRESPAWN: usize = 64;
+/// The most workers ever (the trial allows 256 processes and threads, the suite included).
+const MAX_WORKERS: usize = 180;
+const STACK: usize = 1 << 20;
 
-static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+struct Pool {
+    queue: Mutex<VecDeque<TcpStream>>,
+    ready: Condvar,
+    idle: AtomicUsize,
+    total: AtomicUsize,
+}
+
+fn worker(pool: Arc<Pool>, handler: Handler) {
+    loop {
+        let stream = {
+            let mut q = pool.queue.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                if let Some(s) = q.pop_front() {
+                    break s;
+                }
+                pool.idle.fetch_add(1, Ordering::SeqCst);
+                q = pool.ready.wait(q).unwrap_or_else(|e| e.into_inner());
+                pool.idle.fetch_sub(1, Ordering::SeqCst);
+            }
+        };
+        let _ = connection(stream, &handler);
+    }
+}
+
+fn spawn_worker(pool: &Arc<Pool>, handler: &Handler) -> bool {
+    let (p, h) = (pool.clone(), handler.clone());
+    let ok = std::thread::Builder::new().stack_size(STACK).spawn(move || worker(p, h)).is_ok();
+    if ok {
+        pool.total.fetch_add(1, Ordering::SeqCst);
+    }
+    ok
+}
 
 pub fn serve(listener: TcpListener, handler: Handler) {
+    let pool = Arc::new(Pool { queue: Mutex::new(VecDeque::new()), ready: Condvar::new(), idle: AtomicUsize::new(0), total: AtomicUsize::new(0) });
+    for _ in 0..PRESPAWN {
+        spawn_worker(&pool, &handler);
+    }
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
-        if ACTIVE.load(Ordering::Relaxed) >= MAX_THREADS {
-            let mut s = stream;
-            let _ = s.write_all(b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
-            continue;
-        }
-        ACTIVE.fetch_add(1, Ordering::Relaxed);
-        let h = handler.clone();
-        let spawned = std::thread::Builder::new().stack_size(4 << 20).spawn(move || {
-            let _ = connection(stream, &h);
-            ACTIVE.fetch_sub(1, Ordering::Relaxed);
-        });
-        if spawned.is_err() {
-            ACTIVE.fetch_sub(1, Ordering::Relaxed);
+        let backlog = {
+            let mut q = pool.queue.lock().unwrap_or_else(|e| e.into_inner());
+            q.push_back(stream);
+            q.len()
+        };
+        pool.ready.notify_one();
+        // Every worker busy on a kept-alive connection: add one, up to the cap.
+        if pool.idle.load(Ordering::SeqCst) < backlog && pool.total.load(Ordering::SeqCst) < MAX_WORKERS {
+            spawn_worker(&pool, &handler);
         }
     }
+}
+
+extern "C" {
+    fn recv(fd: i32, buf: *mut u8, len: usize, flags: i32) -> isize;
+}
+const MSG_DONTWAIT: i32 = 0x40;
+const EAGAIN: i32 = 11;
+
+/// How many connections may busy-poll at once (the rest block at once), and for how many polls.
+static SPINNERS: AtomicUsize = AtomicUsize::new(0);
+fn spin_config() -> (usize, usize) {
+    static C: std::sync::OnceLock<(usize, usize)> = std::sync::OnceLock::new();
+    *C.get_or_init(|| {
+        let polls = std::env::var("FORGE_SPIN").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
+        let max = std::env::var("FORGE_SPINNERS").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        (polls, max)
+    })
+}
+
+/// Wait for the next request on a kept-alive connection: poll without blocking for a short while
+/// (a sandboxed kernel makes waking a blocked thread expensive), then block as usual.
+fn read_spin(stream: &mut TcpStream, chunk: &mut [u8]) -> std::io::Result<usize> {
+    use std::os::fd::AsRawFd;
+    let (polls, max) = spin_config();
+    if polls > 0 && SPINNERS.fetch_add(1, Ordering::SeqCst) < max {
+        let fd = stream.as_raw_fd();
+        let mut result = None;
+        for _ in 0..polls {
+            let n = unsafe { recv(fd, chunk.as_mut_ptr(), chunk.len(), MSG_DONTWAIT) };
+            if n >= 0 {
+                result = Some(Ok(n as usize));
+                break;
+            }
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() != Some(EAGAIN) {
+                result = Some(Err(err));
+                break;
+            }
+            std::hint::spin_loop();
+        }
+        SPINNERS.fetch_sub(1, Ordering::SeqCst);
+        if let Some(r) = result {
+            return r;
+        }
+    } else if polls > 0 {
+        SPINNERS.fetch_sub(1, Ordering::SeqCst);
+    }
+    stream.read(chunk)
 }
 
 fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
@@ -152,7 +237,7 @@ fn connection(mut stream: TcpStream, handler: &Handler) -> std::io::Result<()> {
                 simple(&mut stream, 431);
                 return Ok(());
             }
-            let n = stream.read(&mut chunk)?;
+            let n = if buf.is_empty() { read_spin(&mut stream, &mut chunk)? } else { stream.read(&mut chunk)? };
             if n == 0 {
                 return Ok(());
             }
@@ -210,7 +295,7 @@ fn connection(mut stream: TcpStream, handler: &Handler) -> std::io::Result<()> {
                             sent_continue = true;
                             stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
                         }
-                        let n = stream.read(&mut chunk)?;
+                        let n = read_spin(&mut stream, &mut chunk)?;
                         if n == 0 {
                             return Ok(());
                         }
@@ -240,7 +325,7 @@ fn connection(mut stream: TcpStream, handler: &Handler) -> std::io::Result<()> {
                 buf.reserve(len - buf.len());
             }
             while buf.len() < len {
-                let n = stream.read(&mut chunk)?;
+                let n = read_spin(&mut stream, &mut chunk)?;
                 if n == 0 {
                     return Ok(());
                 }

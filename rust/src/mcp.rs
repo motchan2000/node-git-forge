@@ -283,7 +283,7 @@ fn rpc(status: u16, body: &Json) -> Response {
     Response::bytes(status, "application/json", body.to_string().into_bytes())
 }
 
-pub fn handle(forge: &std::sync::Mutex<Forge>, method: &str, body: &[u8], base: &str, authorized: bool) -> Response {
+pub fn handle(forge: &std::sync::RwLock<Forge>, method: &str, body: &[u8], base: &str, authorized: bool) -> Response {
     if method == "DELETE" {
         return Response::bytes(if authorized { 405 } else { 401 }, "application/json", Vec::new());
     }
@@ -297,7 +297,7 @@ pub fn handle(forge: &std::sync::Mutex<Forge>, method: &str, body: &[u8], base: 
         Ok(v) => v,
         Err(_) => return rpc(400, &jobj! { "jsonrpc" => "2.0", "id" => Json::Null, "error" => jobj! { "code" => -32700, "message" => "Parse error" } }),
     };
-    let mut f = forge.lock().unwrap_or_else(|e| e.into_inner());
+    let mut f = forge.write().unwrap_or_else(|e| e.into_inner());
     match parsed {
         Json::Arr(items) => {
             if items.is_empty() {
