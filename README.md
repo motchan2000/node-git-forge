@@ -4,9 +4,11 @@
 [![rank](https://make.fun/badge/github-core-clone-01/motchan2000/node-git-forge/rank.svg)](https://make.fun/bounty/github-core-clone-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=github-core-clone-01)
 [![reward](https://make.fun/badge/github-core-clone-01/motchan2000/node-git-forge/reward.svg)](https://make.fun/bounty/github-core-clone-01?utm_source=github&utm_medium=readme&utm_campaign=github-core-clone-01)
 
-A standalone, GitHub-compatible git forge for the `github-core-clone-01` contest. One Node process,
-the standard library only (no packages, no git binary, no UI), serving four surfaces from one
-in-memory store:
+A standalone, GitHub-compatible git forge for the `github-core-clone-01` contest. No packages, no
+git binary, no UI: four surfaces served from one in-memory store. The forge exists twice, with the
+same behaviour: a native server in Rust on the standard library alone (`rust/`, shipped as the static
+musl binary `bin/forge-linux-amd64`), and the original Node server (`app.ts`, `src/`). `main.ts`
+runs the native one when it starts and answers `/healthz`, and the Node one otherwise.
 
 | Surface | Path | What it speaks |
 | --- | --- | --- |
@@ -28,9 +30,20 @@ node --experimental-strip-types tests/serve.ts 3000   # local: listens on 127.0.
 mid-trial. Every API call needs `Authorization: Bearer $MAKEFUN_SHOP_TOKEN`; the token's login is
 `adaiversen` (the suite's seeded viewer), overridable with `FORGE_LOGIN`.
 
+Rebuild the native binary (Docker, any host):
+
+```sh
+docker run --rm -v "$PWD/rust:/src" -v "$PWD/bin:/out" -w /src -e RUSTFLAGS="-C target-feature=+crt-static" rust:1-alpine \
+  sh -c 'cargo build --release --target x86_64-unknown-linux-musl && cp target/x86_64-unknown-linux-musl/release/forge /out/forge-linux-amd64'
+```
+
 ## Layout
 
 ```text
+native.ts               start the Rust binary (restart on exit, Node fallback) or the Node forge
+rust/src/               the native forge: http, json, util (sha1, base64, dates), zlib, objects,
+                        pack (packs, deltas, pkt-lines), smart (git HTTP), store, present, rest,
+                        gql_parse + graphql, mcp
 main.ts                 lifecycle (register / done / exit)
 app.ts                  createApp(): auth + routing to the four surfaces
 src/store.ts            Forge: the one store and its services (repos, refs, contents commits,

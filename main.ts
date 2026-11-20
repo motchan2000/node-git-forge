@@ -14,9 +14,9 @@
 //   5. Close the server and exit 0. The harness then stops the env, which writes the export the scorer
 //      reads.
 //
-// main.ts imports its own server and nothing else: no package, no Node built-in, no model call.
+// main.ts imports its own server (native.ts, which runs the Rust binary or app.ts) and no package.
 
-import { createApp } from './app.ts';
+import { startForge } from './native.ts';
 
 // The forge must outlive every request: a stray exception or rejection from one handler is logged and
 // survived, never allowed to end the process (a process that exits mid-trial scores 0). The lifecycle's
@@ -90,20 +90,16 @@ async function waitForDone(): Promise<void> {
 
 /** Bound the port, register it, then wait for the env: the whole life of the process. */
 async function main(): Promise<void> {
-  const server = createApp();
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, () => resolve());
-  });
-  const address = server.address();
-  if (address === null || typeof address === 'string') throw new Error('the server did not bind an ephemeral TCP port');
-  process.stdout.write(`[entry] listening on port ${address.port}\n`);
+  // The native forge (rust/, shipped as bin/forge-linux-amd64) when it starts and answers /healthz,
+  // else the Node forge (app.ts): native.ts decides, and keeps the port served for the whole trial.
+  const forge = await startForge();
+  process.stdout.write(`[entry] ${forge.kind} forge listening on port ${forge.port}\n`);
 
-  await register(address.port);
+  await register(forge.port);
   process.stdout.write('[entry] registered; waiting for the env to say done\n');
 
   await waitForDone();
-  server.close();
+  forge.stop();
   process.stdout.write('[entry] done\n');
 }
 
