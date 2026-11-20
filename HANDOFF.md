@@ -210,6 +210,14 @@ push は明確に改善（ばらつきも小さい）、write はやや改善、
 **epoll（スピンなし）も不採用**: 2 CPU では read 721 vs 1267（threads）と良く見えたが、1 CPU では read 1711 vs 1241 と逆転。
 ぶれの範囲を超える一貫した差がないため、本番実績のあるスレッド版を既定のままにした。
 
+**Go との比較（上位 3 つは Rust/Go）**: 固定 JSON を返すだけの Go `net/http` サーバーと、forge を同じ gVisor 内で交互に計測
+（`tests/perf/gab.sh`、2 CPU）。1 リクエストあたり forge は GET 610〜686 µs / POST 875〜915 µs、
+Go は GET 877〜976 µs / POST 1226〜1273 µs。**forge のほうが 30〜40% 速い**（Go は netpoller と M の受け渡しで
+システムコールが多い）。サーバーの作りで上位に負けている形跡はない。
+
+**応答サイズは無関係**: Go の固定サーバーで Issue JSON 約 700 バイトと最小 JSON を比べても差はぶれの範囲内。
+フィールドを削っても速くならない。
+
 **git プロトコル v0 で clone の往復を 3→2 回に減らす案は不可**: ベンチの clone は `Git-Protocol: version=2` を送り、
 チェック `advertise-v2` が v2 応答を必須にしている。
 
