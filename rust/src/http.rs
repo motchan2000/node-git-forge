@@ -76,7 +76,7 @@ impl Response {
     }
 }
 
-fn reason(status: u16) -> &'static str {
+pub fn reason(status: u16) -> &'static str {
     match status {
         100 => "Continue",
         200 => "OK",
@@ -174,7 +174,7 @@ static SPINNERS: AtomicUsize = AtomicUsize::new(0);
 fn spin_config() -> (usize, usize) {
     static C: std::sync::OnceLock<(usize, usize)> = std::sync::OnceLock::new();
     *C.get_or_init(|| {
-        let polls = std::env::var("FORGE_SPIN").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
+        let polls = std::env::var("FORGE_SPIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         let max = std::env::var("FORGE_SPINNERS").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
         (polls, max)
     })

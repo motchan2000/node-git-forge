@@ -3,6 +3,7 @@
 //!
 //! main.ts starts this binary and registers the port it prints (`FORGE_PORT <n>`) with the env.
 
+mod event;
 mod gql_parse;
 mod graphql;
 mod http;
@@ -138,5 +139,16 @@ fn main() {
         let _ = out.flush();
     }
     let handler: http::Handler = Arc::new(move |req: &Request| app.handle(req));
+    // FORGE_SERVER=epoll selects the experimental epoll loop; the default is thread-per-connection,
+    // the design measured at 948 in production. Busy-polling (FORGE_SPIN, FORGE_EPOLL_SPIN) is off by
+    // default: it ran faster in a local gVisor sandbox but slower in production (924).
+    let server = std::env::var("FORGE_SERVER").unwrap_or_else(|_| "threads".into());
+    if server == "epoll" {
+        let polls = std::env::var("FORGE_EPOLL_SPIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        match event::serve(listener, handler.clone(), polls) {
+            Ok(()) => return,
+            Err(l) => return http::serve(l, handler),
+        }
+    }
     http::serve(listener, handler);
 }
