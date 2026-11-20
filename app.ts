@@ -2,7 +2,8 @@
 // /{owner}/{repo}.git, REST v3 under /api/v3, GraphQL at /api/graphql and MCP at /mcp — plus the
 // /healthz probe. main.ts owns the lifecycle; this file builds the server it listens with.
 
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { Server } from 'node:net';
+import { createServer, type Req as IncomingMessage, type Res as ServerResponse } from './src/server.ts';
 import { Forge, ForgeError, type User } from './src/store.ts';
 import { BadJson, credentialOf, originOf, sendError, sendJson } from './src/http.ts';
 import { handleRest } from './src/api/rest.ts';
@@ -79,7 +80,7 @@ async function handle(forge: Forge, req: IncomingMessage, res: ServerResponse): 
 /** Build the server. It binds nothing until the caller listens; the entry listens on an ephemeral port. */
 export function createApp(): Server {
   const forge = new Forge(viewerFromEnv());
-  const server = createServer({ keepAlive: true, keepAliveTimeout: 65_000 }, (req, res) => {
+  return createServer((req, res) => {
     handle(forge, req, res).catch((err: unknown) => {
       if (err instanceof BadJson) {
         sendError(res, 400, 'Problems parsing JSON');
@@ -94,8 +95,4 @@ export function createApp(): Server {
       else res.destroy();
     });
   });
-  server.keepAliveTimeout = 65_000;
-  server.headersTimeout = 70_000;
-  server.requestTimeout = 0;
-  return server;
 }

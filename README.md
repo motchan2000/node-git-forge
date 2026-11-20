@@ -35,6 +35,7 @@ main.ts                 lifecycle (register / done / exit)
 app.ts                  createApp(): auth + routing to the four surfaces
 src/store.ts            Forge: the one store and its services (repos, refs, contents commits,
                         issues, labels, comments, pulls, three-way squash merge)
+src/server.ts           HTTP/1.1 on node:net: keep-alive, pipelining, chunked bodies, one write per reply
 src/http.ts             JSON replies, request ids, body reading, credentials
 src/git/objects.ts      object hashing, ObjectStore, tree/commit codecs
 src/git/treeops.ts      flatten/build trees, ancestry, merge base, file diffs, 3-way merge

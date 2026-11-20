@@ -1,6 +1,6 @@
 // Shared HTTP plumbing: JSON replies with the GitHub headers, body reading, auth and the request id.
 
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Req as IncomingMessage, Res as ServerResponse } from './server.ts';
 
 export const JSON_TYPE = 'application/json; charset=utf-8';
 
@@ -46,23 +46,9 @@ export function sendBytes(res: ServerResponse, status: number, contentType: stri
   res.end(body);
 }
 
-/** Read the whole request body. */
-export function readBody(req: IncomingMessage, limit = 512 * 1024 * 1024): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    req.on('data', (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > limit) {
-        reject(new Error('body too large'));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on('end', () => resolve(chunks.length === 1 ? (chunks[0] as Buffer) : Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
+/** The whole request body (the server front end has already read it). */
+export async function readBody(req: IncomingMessage): Promise<Buffer> {
+  return req.body;
 }
 
 export class BadJson extends Error {}

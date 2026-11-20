@@ -2,7 +2,7 @@
 // executor over parsed documents, and the queries and mutations gh and github-mcp-server send. Every
 // resolver reads and writes the same Forge store as REST, so ids and states agree across surfaces.
 
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Req as IncomingMessage, Res as ServerResponse } from '../server.ts';
 import { Forge, ForgeError, type Comment, type Issue, type Pull, type Repo } from '../store.ts';
 import { readBody, sendJson } from '../http.ts';
 import { GraphQLSyntaxError, parseDocument, valueOf, type Directive, type Document, type Operation, type Selection } from './graphql-parse.ts';

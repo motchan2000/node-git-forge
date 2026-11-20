@@ -1,7 +1,7 @@
 // GitHub REST v3 under /api/v3. The caller has already authenticated the request; this module
 // routes it, calls the store, and writes the GitHub-shaped JSON reply.
 
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Req as IncomingMessage, Res as ServerResponse } from '../server.ts';
 import { Forge, ForgeError, type Issue, type Repo } from '../store.ts';
 import { sendJson, sendJsonText, parseJson, readBody } from '../http.ts';
 import { commentJson, commitJson, issueJson, labelJson, pullJson, repoJson, userJson } from './present.ts';

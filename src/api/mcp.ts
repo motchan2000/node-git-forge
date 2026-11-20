@@ -3,7 +3,7 @@
 // revisions (initialize + notifications/initialized). The tools call the same Forge services as REST
 // and answer REST-shaped JSON, so an object read over either surface has the same id and fields.
 
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Req as IncomingMessage, Res as ServerResponse } from '../server.ts';
 import { Forge, ForgeError, type Repo } from '../store.ts';
 import { readBody } from '../http.ts';
 import { issueJson, pullJson, repoJson } from './present.ts';

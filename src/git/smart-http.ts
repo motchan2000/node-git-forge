@@ -2,7 +2,7 @@
 // and git-receive-pack (v0). Objects go into the forge's ObjectStore; refs move through
 // Forge.setRef, so REST and GraphQL see every push immediately.
 
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Req as IncomingMessage, Res as ServerResponse } from '../server.ts';
 import { gunzipSync } from 'node:zlib';
 import { Forge, type Repo } from '../store.ts';
 import { readBody } from '../http.ts';
