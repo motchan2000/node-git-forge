@@ -1,4 +1,4 @@
-// Starting the forge: the native binary (bin/forge-linux-amd64, built from rust/ as a static musl
+// Starting the forge: the native binary (bin/forge-linux-amd64, built from rust/ as a static glibc
 // executable) when this host can run it, else the Node forge from app.ts. Either way the caller gets a
 // bound port and a stop function, and a forge that keeps serving on that port for the whole trial.
 //
