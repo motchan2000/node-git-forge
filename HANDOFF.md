@@ -59,7 +59,7 @@ main.ts          env ライフサイクル（register → done 待ち → exit 0
 native.ts        bin/forge-linux-amd64 を起動 → "FORGE_PORT n" を待つ → /healthz 確認 → そのポートを登録
                  失敗時は Node 版（app.ts）にフォールバック。バイナリが落ちたら同じポートで再起動、
                  それも無理なら Node 版が同ポートを引き継ぐ
-bin/forge-linux-amd64   Rust 版の静的 musl バイナリ（git 上で mode 100755 必須）
+bin/forge-linux-amd64   Rust 版の静的 glibc バイナリ（static-pie）（git 上で mode 100755 必須）
 rust/src/        Rust 版（標準ライブラリのみ、外部クレートなし、約 4,800 行）
   main.rs        認証・ルーティング、RwLock<Forge>、Issue GET の共有ロック高速路
   http.rs        スレッド/接続サーバー（事前起動 64、上限 180、任意でビジーポーリング）
@@ -87,12 +87,12 @@ tests/perf/gvisor-perf.sh   gVisor 内で forge＋スイートを動かす計測
 - **公式キット**（`github-core-clone-01-kit.tar.gz`）。リポジトリには入っていない（make.fun 側の配布物なので入れないこと）。ユーザーから受け取るか、make.fun の案内（https://make.fun/skill.md）に従って取得する。
 - Node 22、Docker（Rust のビルド用）。
 
-### Rust バイナリのビルド（静的 musl）
+### Rust バイナリのビルド（静的 glibc。musl は 1 リクエストごとに mmap/munmap するので使わない）
 
 ```sh
 docker run --rm -v "$PWD/rust:/src" -v "$PWD/bin:/out" -w /src \
-  -e RUSTFLAGS="-C target-feature=+crt-static" rust:1-alpine \
-  sh -c 'cargo build --release --target x86_64-unknown-linux-musl && cp target/x86_64-unknown-linux-musl/release/forge /out/forge-linux-amd64'
+  -e RUSTFLAGS="-C target-feature=+crt-static" rust:1 \
+  sh -c 'cargo build --release --target x86_64-unknown-linux-gnu && cp target/x86_64-unknown-linux-gnu/release/forge /out/forge-linux-amd64'
 git update-index --chmod=+x bin/forge-linux-amd64   # Windows で作業した場合は必須
 ```
 

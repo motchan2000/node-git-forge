@@ -123,7 +123,30 @@ impl App {
     }
 }
 
+/// Keep freed heap memory in the process. Under gVisor every mmap/munmap is costly, and a strace
+/// of 400 write requests showed the musl build mapping and unmapping about once per request. With
+/// glibc, a high mmap threshold, a high trim threshold and a top pad make freed blocks get reused.
+#[cfg(target_env = "gnu")]
+fn keep_memory() {
+    extern "C" {
+        fn mallopt(param: i32, value: i32) -> i32;
+    }
+    const M_TRIM_THRESHOLD: i32 = -1;
+    const M_TOP_PAD: i32 = -2;
+    const M_MMAP_THRESHOLD: i32 = -3;
+    const M_ARENA_MAX: i32 = -8;
+    unsafe {
+        mallopt(M_MMAP_THRESHOLD, 256 << 20);
+        mallopt(M_TRIM_THRESHOLD, 512 << 20);
+        mallopt(M_TOP_PAD, 32 << 20);
+        mallopt(M_ARENA_MAX, 4);
+    }
+}
+#[cfg(not(target_env = "gnu"))]
+fn keep_memory() {}
+
 fn main() {
+    keep_memory();
     let login = std::env::var("FORGE_LOGIN").unwrap_or_else(|_| "adaiversen".into());
     let name = std::env::var("FORGE_NAME").unwrap_or_else(|_| if login == "adaiversen" { "ada iversen".into() } else { login.clone() });
     let viewer = User { id: 1000, email: format!("{}@example.invalid", login), login, name };
